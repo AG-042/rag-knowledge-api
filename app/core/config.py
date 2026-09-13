@@ -1,11 +1,12 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_env: str = "development"
-    database_url: str
-    redis_url: str
+    database_url: str = "postgresql+psycopg://rag:rag@localhost:5432/rag"
+    redis_url: str = "redis://localhost:6379/0"
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4.1-mini"
     openai_embedding_model: str = "text-embedding-3-small"

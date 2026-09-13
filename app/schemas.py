@@ -1,8 +1,7 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
-
-from app.models import DocumentStatus
 
 
 class DocumentCreate(BaseModel):
@@ -12,10 +11,10 @@ class DocumentCreate(BaseModel):
 
 
 class DocumentRead(BaseModel):
-    id: int
+    id: UUID
     title: str
     source: str | None
-    status: DocumentStatus
+    status: str
     error_message: str | None
     created_at: datetime
     updated_at: datetime
@@ -24,28 +23,20 @@ class DocumentRead(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    question: str = Field(min_length=2)
+    question: str = Field(min_length=3)
     top_k: int = Field(default=5, ge=1, le=20)
 
 
-class SourceChunk(BaseModel):
-    chunk_id: int
-    document_id: int
-    document_title: str
+class SearchHit(BaseModel):
+    document_id: UUID
+    title: str
     source: str | None
+    chunk_index: int
     content: str
-    distance: float
-
-
-class SearchResponse(BaseModel):
-    results: list[SourceChunk]
-
-
-class QueryRequest(SearchRequest):
-    pass
+    score: float
 
 
 class QueryResponse(BaseModel):
     answer: str
-    sources: list[SourceChunk]
+    sources: list[SearchHit]
     cached: bool = False

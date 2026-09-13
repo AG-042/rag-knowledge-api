@@ -1,47 +1,45 @@
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from redis import Redis
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.db import get_db, init_database
-from app.models import Document
-from app.schemas import DocumentCreate, DocumentRead, QueryRequest, QueryResponse, SearchRequest, SearchResponse
-from app.services import answer_question, retrieve
+from app.db import Base, engine, get_db
+from app.models import Document, DocumentChunk, QueryLog
+from app.schemas import DocumentCreate, DocumentRead, QueryResponse, SearchHit, SearchRequest
+from app.services import answer_question, get_cached, search_chunks, set_cached
 from app.tasks import ingest_document
 
 settings = get_settings()
 app = FastAPI(title="RAG Knowledge API", version="1.0.0")
-redis_client = Redis.from_url(settings.redis_url)
 
 
 @app.on_event("startup")
 def startup() -> None:
-    init_database()
+    with engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.create_all(bind=engine)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict:
     return {"status": "ok"}
 
 
 @app.get("/ready")
-def ready(db: Session = Depends(get_db)) -> dict[str, str]:
-    try:
-        db.execute(text("SELECT 1"))
-        redis_client.ping()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Dependency check failed") from exc
+def ready(db: Session = Depends(get_db)) -> dict:
+    db.execute(text("SELECT 1"))
+    Redis.from_url(settings.redis_url).ping()
     return {"status": "ready"}
 
 
 @app.post("/api/v1/documents", response_model=DocumentRead, status_code=status.HTTP_202_ACCEPTED)
 def create_document(payload: DocumentCreate, db: Session = Depends(get_db)) -> Document:
-    document = Document(title=payload.title, source=payload.source, content=payload.content)
+    document = Document(**payload.model_dump())
     db.add(document)
     db.commit()
     db.refresh(document)
-    ingest_document.delay(document.id)
+    ingest_document.delay(str(document.id))
     return document
 
 
@@ -51,7 +49,7 @@ def list_documents(db: Session = Depends(get_db)) -> list[Document]:
 
 
 @app.get("/api/v1/documents/{document_id}", response_model=DocumentRead)
-def get_document(document_id: int, db: Session = Depends(get_db)) -> Document:
+def get_document(document_id: str, db: Session = Depends(get_db)) -> Document:
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -59,21 +57,30 @@ def get_document(document_id: int, db: Session = Depends(get_db)) -> Document:
 
 
 @app.delete("/api/v1/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_document(document_id: str, db: Session = Depends(get_db)) -> None:
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     db.delete(document)
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.post("/api/v1/search", response_model=SearchResponse)
-def search(payload: SearchRequest, db: Session = Depends(get_db)) -> SearchResponse:
-    return SearchResponse(results=retrieve(db, payload.question, payload.top_k))
+@app.post("/api/v1/search", response_model=list[SearchHit])
+def search(payload: SearchRequest, db: Session = Depends(get_db)) -> list[dict]:
+    return search_chunks(db, payload.question, payload.top_k)
 
 
 @app.post("/api/v1/query", response_model=QueryResponse)
-def query(payload: QueryRequest, db: Session = Depends(get_db)) -> QueryResponse:
-    answer, sources, cached = answer_question(db, payload.question, payload.top_k)
-    return QueryResponse(answer=answer, sources=sources, cached=cached)
+def query(payload: SearchRequest, db: Session = Depends(get_db)) -> dict:
+    cached = get_cached(payload.question, payload.top_k)
+    if cached:
+        cached["cached"] = True
+        return cached
+
+    hits = search_chunks(db, payload.question, payload.top_k)
+    answer = answer_question(payload.question, hits)
+    result = {"answer": answer, "sources": hits, "cached": False}
+    db.add(QueryLog(question=payload.question, answer=answer, retrieved_count=len(hits)))
+    db.commit()
+    set_cached(payload.question, payload.top_k, result)
+    return result
