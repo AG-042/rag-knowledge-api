@@ -1,11 +1,13 @@
+from uuid import UUID
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from redis import Redis
-from sqlalchemy import delete, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.db import Base, engine, get_db
-from app.models import Document, DocumentChunk, QueryLog
+from app.models import Document, QueryLog
 from app.schemas import DocumentCreate, DocumentRead, QueryResponse, SearchHit, SearchRequest
 from app.services import answer_question, get_cached, search_chunks, set_cached
 from app.tasks import ingest_document
@@ -49,7 +51,7 @@ def list_documents(db: Session = Depends(get_db)) -> list[Document]:
 
 
 @app.get("/api/v1/documents/{document_id}", response_model=DocumentRead)
-def get_document(document_id: str, db: Session = Depends(get_db)) -> Document:
+def get_document(document_id: UUID, db: Session = Depends(get_db)) -> Document:
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -57,7 +59,7 @@ def get_document(document_id: str, db: Session = Depends(get_db)) -> Document:
 
 
 @app.delete("/api/v1/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(document_id: str, db: Session = Depends(get_db)) -> None:
+def delete_document(document_id: UUID, db: Session = Depends(get_db)) -> None:
     document = db.get(Document, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
